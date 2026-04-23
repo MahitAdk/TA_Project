@@ -1,6 +1,6 @@
 import axios from "axios";
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -128,10 +128,13 @@ export default function Home() {
       <div className="navbar">
         <h2>AI Video Ads Generator</h2>
 
-        <div className="nav-right">
-          <span>
-            {user?.username} ({user?.plan || "starter"})
-          </span>
+        <div className="nav-right nav-right-links">
+          <Link to="/home" className="nav-pill-link nav-pill-link-active">
+            Home
+          </Link>
+          <Link to="/ad-generator" className="nav-pill-link">
+            Ad Generator
+          </Link>
           <button onClick={handleLogout}>Logout</button>
         </div>
       </div>
@@ -156,6 +159,20 @@ export default function Home() {
           />
 
           <button onClick={handleGenerate}>Generate Video</button>
+        </div>
+
+        <div className="home-shortcut-card">
+          <div>
+            <p className="home-shortcut-label">New Feature</p>
+            <h3>Image to Ad Generator</h3>
+            <p>
+              Upload a product image, generate ad copy, and download a polished
+              creative from one workspace.
+            </p>
+          </div>
+          <Link to="/ad-generator" className="home-shortcut-link">
+            Open Ad Generator
+          </Link>
         </div>
 
         <div className="pricing-section">
