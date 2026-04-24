@@ -148,6 +148,7 @@ export default function AdGenerator() {
         <div className="nav-right nav-right-links">
           <Link to="/home" className="nav-pill-link">Home</Link>
           <Link to="/ad-generator" className="nav-pill-link nav-pill-link-active">Ad Generator</Link>
+          <Link to="/video-library" className="nav-pill-link">Video Library</Link>
           <button onClick={handleLogout}>Logout</button>
         </div>
       </div>
@@ -157,7 +158,7 @@ export default function AdGenerator() {
           <p className="ad-generator-eyebrow">Paid Workspace</p>
           <h1>AI Video Ad Generator</h1>
           <p>
-            Upload a photo and watch it transform into a cinematic 5-second video ad 
+            Upload a photo and watch it transform into a cinematic 10-second video ad 
             with professional copy and motion.
           </p>
         </div>

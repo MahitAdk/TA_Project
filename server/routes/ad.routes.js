@@ -1,6 +1,10 @@
 import express from "express";
 import multer from "multer";
-import { generateAd, getAdHistory } from "../controllers/ad.controller.js";
+import {
+  generateAd,
+  getAdHistory,
+  getVideoLibrary,
+} from "../controllers/ad.controller.js";
 import { verifyToken } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
@@ -26,6 +30,7 @@ router.use(verifyToken);
 
 router.post("/generate", upload.single("productImage"), generateAd);
 router.get("/history", getAdHistory);
+router.get("/videos", getVideoLibrary);
 
 router.use((err, _req, res, next) => {
   if (err.code === "LIMIT_FILE_SIZE") {

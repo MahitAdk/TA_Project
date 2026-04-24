@@ -135,6 +135,9 @@ export default function Home() {
           <Link to="/ad-generator" className="nav-pill-link">
             Ad Generator
           </Link>
+          <Link to="/video-library" className="nav-pill-link">
+            Video Library
+          </Link>
           <button onClick={handleLogout}>Logout</button>
         </div>
       </div>
@@ -172,6 +175,20 @@ export default function Home() {
           </div>
           <Link to="/ad-generator" className="home-shortcut-link">
             Open Ad Generator
+          </Link>
+        </div>
+
+        <div className="home-shortcut-card">
+          <div>
+            <p className="home-shortcut-label">Library</p>
+            <h3>Video Archive</h3>
+            <p>
+              Browse all generated ad videos on a dedicated page with playback
+              and creation timestamps.
+            </p>
+          </div>
+          <Link to="/video-library" className="home-shortcut-link">
+            Open Video Library
           </Link>
         </div>
 

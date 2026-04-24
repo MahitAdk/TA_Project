@@ -27,3 +27,13 @@ export const fetchAdHistory = async (page = 1) => {
 
   return response.data;
 };
+
+export const fetchVideoLibrary = async (page = 1, limit = 12) => {
+  const response = await axios.get(`/api/ads/videos?page=${page}&limit=${limit}`, {
+    headers: {
+      ...getAuthHeaders(),
+    },
+  });
+
+  return response.data;
+};
