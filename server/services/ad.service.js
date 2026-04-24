@@ -1,239 +1,278 @@
-import fs from "fs";
-import path from "path";
+import ffmpeg from "fluent-ffmpeg";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import jwt from "jsonwebtoken";
+import path from "path";
+import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ─────────────────────────────────────────────
-// CONSTANTS
-// ─────────────────────────────────────────────
+const firstExistingPath = (...candidates) =>
+  candidates.filter(Boolean).find((candidate) => fs.existsSync(candidate));
 
-const GEMINI_PROMPT = `Analyze this product image and return ONLY a valid JSON object for a video ad:
-{
-  "productName": "string",
-  "usp": "string",
-  "visualDescription": "detailed scene description for AI video generation",
-  "headline": "string",
-  "adCopy": "string",
-  "cta": "string",
-  "platform": "string",
-  "hashtags": []
-}`.trim();
+const resolvedFfmpegPath = firstExistingPath(
+  process.env.FFMPEG_PATH,
+  "C:/ffmpeg-2026-04-22-git-162ad61486-full_build/ffmpeg-2026-04-22-git-162ad61486-full_build/bin/ffmpeg.exe",
+  "C:/ffmpeg/bin/ffmpeg.exe"
+);
 
-const DEFAULT_ANALYSIS = {
-  productName: "Premium Product",
-  usp: "Innovation meets excellence.",
-  visualDescription:
-    "A high-end cinematic product commercial, dramatic studio lighting, 4k, professional advertising style, smooth camera motion.",
-  headline: "Elevate Your Style",
-  adCopy: "Discover perfection in every detail.",
-  cta: "Shop Now",
-  platform: "Instagram",
-  hashtags: ["premium", "innovation"],
-};
+const resolvedFfprobePath = firstExistingPath(
+  process.env.FFPROBE_PATH,
+  "C:/ffmpeg-2026-04-22-git-162ad61486-full_build/ffmpeg-2026-04-22-git-162ad61486-full_build/bin/ffprobe.exe",
+  "C:/ffmpeg/bin/ffprobe.exe"
+);
 
-// Ordered from most-preferred to least-preferred fallback
-const  GEMINI_MODELS = [
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
-];
+const resolvedFontPath = firstExistingPath(
+  process.env.AD_FONT_PATH,
+  "C:/temp/fonts/arialbd.ttf",
+  "C:/temp/fonts/arial.ttf",
+  "C:/Windows/Fonts/arialbd.ttf",
+  "C:/Windows/Fonts/arial.ttf"
+);
 
-const KLING_API_BASE = "https://api.klingai.com";
-const KLING_POLL_INTERVAL_MS = 10_000; // 10 s
-const KLING_POLL_MAX_ATTEMPTS = 30;    // 30 × 10 s = 5 min max
-
-// ─────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────
-
-const createError = (msg, status = 500) => {
-  const err = new Error(msg);
-  err.status = status;
-  return err;
-};
-
-function getKlingToken() {
-  if (!process.env.KLING_ACCESS_KEY || !process.env.KLING_SECRET_KEY) {
-    throw createError("Kling API credentials are not configured.", 500);
-  }
-  const payload = {
-    iss: process.env.KLING_ACCESS_KEY,
-    exp: Math.floor(Date.now() / 1000) + 1800,
-    nbf: Math.floor(Date.now() / 1000) - 5,
-  };
-  return jwt.sign(payload, process.env.KLING_SECRET_KEY, { algorithm: "HS256" });
+if (resolvedFfmpegPath) {
+  ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+if (resolvedFfprobePath) {
+  ffmpeg.setFfprobePath(resolvedFfprobePath);
 }
 
-// ─────────────────────────────────────────────
-// 1. ANALYZE IMAGE WITH GEMINI
-// ─────────────────────────────────────────────
+const winPath = (targetPath) => targetPath.replace(/\\/g, "/");
+const ensureDir = (dir) => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+};
 
-/**
- * Sends the product image to Gemini and returns structured ad analysis.
- * Tries each model in GEMINI_MODELS in order; falls back to DEFAULT_ANALYSIS
- * if all models fail.
- *
- * @param {Buffer} imageBuffer
- * @param {string} mimeType  e.g. "image/jpeg"
- * @returns {Promise<object>}
- */
-export async function analyzeProductImage(imageBuffer, mimeType) {
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn("[Gemini] GEMINI_API_KEY not set. Using default analysis.");
-    return DEFAULT_ANALYSIS;
+const normalizeText = (value, fallback = "", maxLength = 90) =>
+  (value || fallback)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+
+const wrapText = (value, maxCharsPerLine = 24, maxLines = 3) => {
+  const words = normalizeText(value).split(" ").filter(Boolean);
+
+  if (words.length === 0) {
+    return "";
   }
 
-  let lastError;
+  const lines = [];
+  let currentLine = "";
 
-  for (const modelName of GEMINI_MODELS) {
-    try {
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: modelName });
+  for (const word of words) {
+    const nextLine = currentLine ? `${currentLine} ${word}` : word;
 
-      const result = await model.generateContent([
-        GEMINI_PROMPT,
-        {
-          inlineData: {
-            data: imageBuffer.toString("base64"),
-            mimeType,
-          },
-        },
-      ]);
-
-      const raw = result.response.text().replace(/```json|```/gi, "").trim();
-      const parsed = JSON.parse(raw);
-      console.log(`[Gemini] Success with model: ${modelName}`);
-      return parsed;
-    } catch (error) {
-      lastError = error;
-      console.warn(`[Gemini] ${modelName} failed. Error: ${error.message}`);
+    if (nextLine.length <= maxCharsPerLine) {
+      currentLine = nextLine;
+      continue;
     }
-  }
 
-  console.warn(
-    "!!! GEMINI CRITICAL: All models failed. Falling back to default template.",
-    lastError?.message
-  );
-  return DEFAULT_ANALYSIS;
-}
+    if (currentLine) {
+      lines.push(currentLine);
+    }
 
-// ─────────────────────────────────────────────
-// 2. GENERATE VIDEO WITH KLING AI
-// ─────────────────────────────────────────────
+    currentLine = word;
 
-/**
- * Submits a text-to-video task to Kling AI, polls until completion,
- * downloads the result, saves it locally, and returns the relative file path.
- *
- * @param {object} analysis  Output of analyzeProductImage()
- * @returns {Promise<string>} Relative URL path to the saved .mp4 file
- */
-export async function generateAdVideo(analysis) {
-  // ── STEP 1: Submit task ──────────────────────────────────────────────────
-  const submitToken = getKlingToken();
-
-  const submitBody = {
-    model_name: "kling-v1",
-    prompt: `Cinematic advertisement for ${analysis.productName}: ${analysis.visualDescription}`,
-    negative_prompt: "blurry, low quality, distorted, watermark, text overlay",
-    duration: "5",        // FIX: top-level field, NOT inside "arguments"
-    aspect_ratio: "16:9", // FIX: top-level field, NOT inside "arguments"
-    mode: "std",          // "std" (cheaper) | "pro" (higher quality, more credits)
-    cfg_scale: 0.5,       // creativity vs. prompt adherence (0–1)
-  };
-
-  console.log("[Kling] Submitting text2video task...");
-
-  const submitRes = await fetch(`${KLING_API_BASE}/v1/videos/text2video`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${submitToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(submitBody),
-  });
-
-  const taskData = await submitRes.json();
-  console.log("[Kling] Submit response:", JSON.stringify(taskData, null, 2));
-
-  // Surface the real rejection reason instead of swallowing it
-  if (taskData.code !== 0 || !taskData.data?.task_id) {
-    throw createError(
-      `Kling API Rejection (code ${taskData.code}): ${taskData.message || "Unknown error"}`,
-      500
-    );
-  }
-
-  const taskId = taskData.data.task_id;
-  console.log(`[Kling] Task submitted. ID: ${taskId}`);
-
-  // ── STEP 2: Poll for completion ──────────────────────────────────────────
-  // FIX: correct polling endpoint is /v1/videos/text2video/{task_id}
-  //      NOT the generic /v1/tasks/{task_id}
-  let videoUrl = null;
-
-  for (let attempt = 1; attempt <= KLING_POLL_MAX_ATTEMPTS; attempt++) {
-    await sleep(KLING_POLL_INTERVAL_MS);
-
-    const pollToken = getKlingToken(); // refresh token each poll to avoid expiry
-    const statusRes = await fetch(
-      `${KLING_API_BASE}/v1/videos/text2video/${taskId}`,
-      {
-        headers: { Authorization: `Bearer ${pollToken}` },
-      }
-    );
-
-    const statusData = await statusRes.json();
-    const status = statusData.data?.task_status;
-
-    console.log(`[Kling] Attempt ${attempt}/${KLING_POLL_MAX_ATTEMPTS} — status: ${status}`);
-
-    if (status === "succeed") {
-      videoUrl = statusData.data?.task_result?.videos?.[0]?.url;
-      if (!videoUrl) {
-        throw createError("Kling task succeeded but no video URL was returned.", 500);
-      }
-      console.log(`[Kling] Video ready: ${videoUrl}`);
+    if (lines.length === maxLines - 1) {
       break;
     }
-
-    if (status === "failed") {
-      const reason = statusData.data?.task_status_msg || "No reason provided";
-      throw createError(`Kling video processing failed: ${reason}`, 500);
-    }
-
-    // status is "submitted" or "processing" — keep polling
   }
 
-  if (!videoUrl) {
-    throw createError(
-      `Video generation timed out after ${(KLING_POLL_MAX_ATTEMPTS * KLING_POLL_INTERVAL_MS) / 1000}s.`,
-      504
-    );
+  if (currentLine && lines.length < maxLines) {
+    lines.push(currentLine);
   }
 
-  // ── STEP 3: Download and save video ─────────────────────────────────────
-  console.log("[Kling] Downloading video...");
-  const videoArrayBuffer = await fetch(videoUrl).then((res) => {
-    if (!res.ok) throw createError(`Failed to download video: HTTP ${res.status}`, 500);
-    return res.arrayBuffer();
+  return lines.join("\n");
+};
+
+const escapeDrawtext = (value) =>
+  value
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/%/g, "\\%")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/,/g, "\\,")
+    .replace(/\n/g, "\\n");
+
+const escapeFontPath = (targetPath) => winPath(targetPath).replace(/:/g, "\\:");
+
+const renderVideo = (command) =>
+  new Promise((resolve, reject) => {
+    command
+      .on("start", (cmd) => console.log("[FFmpeg render]", cmd))
+      .on("end", resolve)
+      .on("error", (err) => {
+        console.error("[FFmpeg render error]:", err.message);
+        reject(err);
+      })
+      .run();
   });
 
-  const outputDir = path.join(__dirname, "..", "uploads", "ad-outputs");
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+/* ================================
+   GEMINI ANALYSIS
+================================ */
+export async function analyzeProductImage(imageBuffer, mimeType) {
+  try {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error("Missing GEMINI_API_KEY");
+    }
+
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash-lite",
+    });
+
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Analyze this product image and return ONLY JSON:
+{
+  "productName": string,
+  "headline": string,
+  "adCopy": string,
+  "cta": string,
+  "platform": string,
+  "hashtags": string[],
+  "tone": string,
+  "keyFeatures": string,
+  "targetAudience": string,
+  "usp": string
+}`,
+            },
+            {
+              inlineData: {
+                mimeType,
+                data: imageBuffer.toString("base64"),
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    let text = result.response.text().trim();
+    text = text.replace(/```json|```/g, "").trim();
+
+    return JSON.parse(text);
+  } catch (err) {
+    console.log("[Gemini fallback]:", err.message);
+
+    return {
+      productName: "Product",
+      headline: "Premium Quality, Made Simple",
+      adCopy: "Upgrade your lifestyle today.",
+      cta: "Shop Now",
+      platform: "Instagram",
+      hashtags: ["sale", "premium"],
+      tone: "Modern",
+      keyFeatures: "High quality",
+      targetAudience: "Everyone",
+      usp: "Affordable premium feel",
+    };
+  }
+}
+
+/* ================================
+   VIDEO GENERATION (PRO LEVEL)
+================================ */
+export async function generateVideoFromImage(inputPath, outputPath, analysis) {
+  if (!resolvedFfmpegPath || !fs.existsSync(resolvedFfmpegPath)) {
+    throw new Error("FFmpeg binary not found. Set FFMPEG_PATH to a valid ffmpeg.exe.");
   }
 
-  const filename = `ad_${Date.now()}.mp4`;
-  const outputPath = path.join(outputDir, filename);
-  fs.writeFileSync(outputPath, Buffer.from(videoArrayBuffer));
-  console.log(`[Kling] Video saved to: ${outputPath}`);
+  if (!resolvedFontPath || !fs.existsSync(resolvedFontPath)) {
+    throw new Error("No usable font found for drawtext. Set AD_FONT_PATH to a valid .ttf file.");
+  }
 
-  return `/uploads/ad-outputs/${filename}`;
+  ensureDir(path.dirname(outputPath));
+  ensureDir(path.join(__dirname, "..", "tmp"));
+  ensureDir(path.join(os.tmpdir(), "ta-project-ad-renders"));
+
+  const safeOutput = winPath(outputPath);
+  const fontPath = escapeFontPath(resolvedFontPath);
+  const duration = 10;
+  const fps = 30;
+  const totalFrames = duration * fps;
+  const halfwayFrame = Math.floor(totalFrames / 2);
+
+  const headline = escapeDrawtext(
+    wrapText(
+      normalizeText(analysis?.headline, analysis?.productName || "Premium product", 72),
+      20,
+      2
+    )
+  );
+  const bodyCopy = escapeDrawtext(
+    wrapText(
+      normalizeText(
+        analysis?.adCopy,
+        analysis?.keyFeatures || "Crafted for daily use with a refined premium finish.",
+        120
+      ),
+      30,
+      3
+    )
+  );
+  const cta = escapeDrawtext(
+    normalizeText(analysis?.cta, "Shop Now", 20).toUpperCase()
+  );
+  const brandLine = escapeDrawtext(
+    normalizeText(
+      analysis?.productName,
+      analysis?.platform ? `${analysis.platform} Ad` : "Featured Product",
+      38
+    ).toUpperCase()
+  );
+
+  const filterGraph = [
+    `[0:v]split=2[bgsrc][herosrc]`,
+    `[bgsrc]scale=1600:-1,zoompan=z='if(lte(on,${halfwayFrame}),1.08+0.00035*on,1.185-0.00018*(on-${halfwayFrame}))':x='iw/2-(iw/zoom/2)+40*sin(on/17)':y='ih/2-(ih/zoom/2)+28*cos(on/19)':d=${totalFrames}:s=1080x1080:fps=${fps},boxblur=18:8,eq=contrast=1.10:brightness=0.02:saturation=1.18,setsar=1[bg]`,
+    `[herosrc]scale=1080:-1,zoompan=z='1.0+0.0005*on':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=780x780:fps=${fps},eq=contrast=1.04:brightness=0.01:saturation=1.12,setsar=1[hero]`,
+    `[bg]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.18:t=fill[bgdim]`,
+    `[bgdim]drawbox=x=74:y=78:w=932:h=936:color=white@0.10:t=3[panel]`,
+    `[panel][hero]overlay=x='(W-w)/2+14*sin(t*0.9)':y='120+10*sin(t*1.4)':eval=frame[base]`,
+    `[base]drawbox=x=0:y=700:w=iw:h=300:color=black@0.34:t=fill[textbg]`,
+    `[textbg]drawtext=fontfile='${fontPath}':text='${brandLine}':fontsize=28:fontcolor=white@0.72:x=92:y=742:enable='between(t,0,10)'[brand]`,
+    `[brand]drawtext=fontfile='${fontPath}':text='${headline}':fontsize=62:line_spacing=10:fontcolor=white:x='(w-text_w)/2':y='770-20*cos(t*1.5)':alpha='if(lt(t,0.35),0,if(lt(t,0.9),(t-0.35)/0.55,if(lt(t,3.2),1,if(lt(t,3.8),(3.8-t)/0.6,0))))':enable='between(t,0.35,3.8)'[headline]`,
+    `[headline]drawtext=fontfile='${fontPath}':text='${bodyCopy}':fontsize=38:line_spacing=12:fontcolor=white@0.96:x='(w-text_w)/2':y='788+8*sin(t*1.2)':alpha='if(lt(t,3.2),0,if(lt(t,3.8),(t-3.2)/0.6,if(lt(t,6.8),1,if(lt(t,7.4),(7.4-t)/0.6,0))))':enable='between(t,3.2,7.4)'[copy]`,
+    `[copy]drawbox=x=340:y=850:w=400:h=96:color=white@0.92:t=fill:enable='between(t,7.0,10)'[ctabox]`,
+    `[ctabox]drawtext=fontfile='${fontPath}':text='${cta}':fontsize=34:fontcolor=black:x='(w-text_w)/2+6*sin(t*3.2)':y='881+2*sin(t*4)':alpha='if(lt(t,7.0),0,if(lt(t,7.5),(t-7.0)/0.5,1))':enable='between(t,7.0,10)',fade=t=in:st=0:d=0.5,fade=t=out:st=9.35:d=0.65,format=yuv420p[vout]`,
+  ].join(";");
+
+  try {
+    await renderVideo(
+      ffmpeg()
+        .input(winPath(inputPath))
+        .inputOptions(["-loop 1"])
+        .duration(duration)
+        .complexFilter(filterGraph)
+        .outputOptions([
+          "-map [vout]",
+          "-r 30",
+          "-c:v libx264",
+          "-preset slow",
+          "-crf 17",
+          "-profile:v high",
+          "-level 4.2",
+          "-pix_fmt yuv420p",
+          "-movflags +faststart",
+        ])
+        .noAudio()
+        .output(safeOutput)
+    );
+
+    console.log("[FFmpeg] Final video created:", safeOutput);
+    return safeOutput;
+  } catch (err) {
+    console.error("Video generation failed:", err);
+    throw err;
+  }
 }
