@@ -50,6 +50,19 @@ const mapAdRecord = (record) => ({
   created_at: record.created_at,
 });
 
+const buildPagination = (page, defaultLimit = 10, maxLimit = 50) => {
+  const resolvedPage = Number.parseInt(page, 10) || 1;
+  const requestedLimit = Number.parseInt(defaultLimit, 10) || defaultLimit;
+  const limit = Math.min(Math.max(requestedLimit, 1), maxLimit);
+  const offset = (resolvedPage - 1) * limit;
+
+  return {
+    page: resolvedPage,
+    limit,
+    offset,
+  };
+};
+
 export const generateAd = async (req, res) => {
   try {
     const user = await getUserById(req.user.id);
@@ -184,9 +197,7 @@ export const generateAd = async (req, res) => {
 
 export const getAdHistory = async (req, res) => {
   try {
-    const page = Number.parseInt(req.query.page, 10) || 1;
-    const limit = 10;
-    const offset = (page - 1) * limit;
+    const { page, limit, offset } = buildPagination(req.query.page, 10);
 
     const result = await pool.query(
       `SELECT *
@@ -206,6 +217,36 @@ export const getAdHistory = async (req, res) => {
     console.error(err);
     return res.status(500).json({
       error: "Failed to fetch history",
+    });
+  }
+};
+
+export const getVideoLibrary = async (req, res) => {
+  try {
+    const { page, limit, offset } = buildPagination(
+      req.query.page,
+      req.query.limit || 12
+    );
+
+    const result = await pool.query(
+      `SELECT *
+       FROM ad_generations
+       WHERE user_id = $1
+         AND generated_image_url IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [req.user.id, limit, offset]
+    );
+
+    return res.json({
+      videos: result.rows.map(mapAdRecord),
+      page,
+      limit,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: "Failed to fetch video library",
     });
   }
 };
